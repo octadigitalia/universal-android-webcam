@@ -1,0 +1,33 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+dist/
+*.spec
+
+# Scrcpy binaries & logs (portable tools should be downloaded or packaged in release)
+scrcpy-*/
+scrcpy/
+release/
+*.log
+*.txt
+!requirements.txt
+crash.txt
+error.log
+output.log
+
+# User local configs & recordings
+Recordings/
+*.mp4
+*.mkv
+
+# OS artifacts
+Thumbs.db
+Desktop.ini
+.DS_Store
