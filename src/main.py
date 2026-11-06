@@ -4,7 +4,11 @@ import time
 import datetime
 import subprocess
 import threading
-import ctypes
+import re
+import numpy as np
+import pyvirtualcam
+import win32pipe
+import win32file
 
 # Determine base directory whether running from script or PyInstaller frozen bundle
 if getattr(sys, 'frozen', False):
@@ -39,46 +43,50 @@ ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 ICON_OFF_PATH = os.path.join(ASSETS_DIR, "icon_off.png")
 ICON_ON_PATH = os.path.join(ASSETS_DIR, "icon_on.png")
 
-# Fallback icons if not present
 if not os.path.exists(ICON_OFF_PATH):
     ICON_OFF_PATH = os.path.join(BASE_DIR, "icon_off.png")
     ICON_ON_PATH = os.path.join(BASE_DIR, "icon_on.png")
-
-OBS_DIR = r"C:\Program Files\obs-studio\bin\64bit"
-OBS_EXE = os.path.join(OBS_DIR, "obs64.exe")
 
 CREATE_NO_WINDOW = 0x08000000
 
 class UniversalWebcamApp:
     def __init__(self):
         self.device_mgr = DeviceManager(BASE_DIR)
+        self.ffmpeg_exe = find_binary("ffmpeg.exe", BASE_DIR)
+        
         self.is_running = False
+        self.vcam = None
         self.scrcpy_proc = None
-        self.obs_proc = None
+        self.ffmpeg_proc = None
+        self.pipe_handle = None
+        self.stream_thread = None
+        self.orient_thread = None
 
         # State
         self.selected_device = None  # serial
         self.device_name = "Android"
         self.available_cameras = []
         self.camera_id = "1"
-        self.resolution = "1280x720"
-        self.fps = "30"
+        self.width = 1280
+        self.height = 720
+        self.fps = 30
         self.zoom = "1.0"
 
-        # Toggles
+        # Orientation & Geometry
+        self.auto_rotate = True    # Detects physical device rotation
+        self.device_rotation = 0   # 0, 90, 180, 270 degrees
+        self.manual_rotation = 0   # User offset (0, 90, 180, 270)
         self.is_mirrored = True
         self.is_desk_view = False
-        self.use_mic = False
         self.torch_on = False
         self.is_muted = False
-        self.is_recording = False
-        self.current_record_file = None
 
         self.icon_off = Image.open(ICON_OFF_PATH) if os.path.exists(ICON_OFF_PATH) else None
         self.icon_on = Image.open(ICON_ON_PATH) if os.path.exists(ICON_ON_PATH) else None
         self.tray_icon = None
         self.hotkeys_listener = None
         self._switch_lock = threading.Lock()
+        self._last_frame = None
 
     def refresh_devices_and_cameras(self, force=False):
         """Scans for connected devices and cameras."""
@@ -88,7 +96,6 @@ class UniversalWebcamApp:
                 self.selected_device = devices[0]['serial']
                 self.device_name = devices[0]['name']
             self.available_cameras = self.device_mgr.get_device_cameras(self.selected_device, force_refresh=force)
-            # Default to front camera if available
             front_cams = [c for c in self.available_cameras if c.get('facing') == 'front']
             if front_cams and self.camera_id not in [c['id'] for c in self.available_cameras]:
                 self.camera_id = front_cams[0]['id']
@@ -97,31 +104,36 @@ class UniversalWebcamApp:
             self.device_name = "Nenhum celular conectado"
             self.available_cameras = []
 
-    def clean_obs_safemode(self):
-        safe_mode_file = os.path.expandvars(r"%APPDATA%\obs-studio\safe_mode")
-        if os.path.exists(safe_mode_file):
-            try:
-                os.remove(safe_mode_file)
-            except Exception:
-                pass
-
-    def is_obs_running(self):
+    def query_device_rotation(self):
+        """Queries physical orientation from Android WindowManager."""
+        adb = [self.device_mgr.adb_exe]
+        if self.selected_device:
+            adb.extend(["-s", self.selected_device])
         try:
             res = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq obs64.exe"],
+                adb + ["shell", "dumpsys window | grep mCurrentRotation"],
                 capture_output=True,
                 text=True,
-                creationflags=CREATE_NO_WINDOW
+                creationflags=CREATE_NO_WINDOW,
+                timeout=2.0
             )
-            return "obs64.exe" in res.stdout
+            m = re.search(r"mCurrentRotation=ROTATION_(\d+)", res.stdout)
+            if m:
+                return int(m.group(1))
         except Exception:
-            return False
+            pass
+        return self.device_rotation
+
+    def get_effective_rotation(self):
+        base = self.device_rotation if self.auto_rotate else 0
+        rot = (base + self.manual_rotation) % 360
+        if self.is_desk_view:
+            rot = (rot + 180) % 360
+        return rot
 
     def get_orientation_flag(self):
-        if self.is_desk_view:
-            return "flip180" if self.is_mirrored else "180"
-        else:
-            return "flip0" if self.is_mirrored else "0"
+        rot = self.get_effective_rotation()
+        return f"flip{rot}" if self.is_mirrored else str(rot)
 
     def is_current_camera_back(self):
         for c in self.available_cameras:
@@ -129,41 +141,7 @@ class UniversalWebcamApp:
                 return c.get('facing') == 'back'
         return str(self.camera_id) in ["0", "2"]
 
-    def build_scrcpy_command(self):
-        cmd = [
-            self.device_mgr.scrcpy_exe,
-            "--video-source=camera",
-            f"--camera-id={str(self.camera_id)}",
-            f"--camera-size={self.resolution}",
-            f"--camera-fps={self.fps}",
-            f"--capture-orientation={self.get_orientation_flag()}",
-            "--window-title=GalaxyCam"
-        ]
-
-        if self.selected_device:
-            cmd.extend(["-s", self.selected_device])
-
-        if self.zoom != "1.0":
-            cmd.append(f"--camera-zoom={self.zoom}")
-
-        # Hardware Torch on back cameras
-        if self.torch_on and self.is_current_camera_back():
-            cmd.append("--camera-torch")
-
-        if self.use_mic:
-            cmd.extend(["--audio-source=mic", "--audio-codec=opus"])
-        else:
-            cmd.append("--no-audio")
-
-        if self.is_recording:
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            self.current_record_file = os.path.join(RECORDINGS_DIR, f"Webcam_{timestamp}.mp4")
-            cmd.append(f"--record={self.current_record_file}")
-
-        return cmd
-
     def update_torch_state(self):
-        """Applies hardware torch (back LED) or virtual ring light (front screen brightness)."""
         is_back = self.is_current_camera_back()
         adb = [self.device_mgr.adb_exe]
         if self.selected_device:
@@ -174,7 +152,6 @@ class UniversalWebcamApp:
                 if is_back:
                     subprocess.run(adb + ["shell", "settings put system screen_brightness 80"], capture_output=True, creationflags=CREATE_NO_WINDOW)
                 else:
-                    # Front camera: Virtual Ring Light via screen
                     subprocess.run(adb + ["shell", "input keyevent KEYCODE_WAKEUP"], capture_output=True, creationflags=CREATE_NO_WINDOW)
                     subprocess.run(adb + ["shell", "settings put system screen_brightness 255"], capture_output=True, creationflags=CREATE_NO_WINDOW)
             else:
@@ -183,12 +160,74 @@ class UniversalWebcamApp:
         except Exception:
             pass
 
-    def start_scrcpy_stream(self):
-        """Starts only the scrcpy video feed in 100% background without console."""
+    def _orientation_watcher(self):
+        while self.is_running:
+            time.sleep(1.0)
+            if not self.auto_rotate or not self.is_running:
+                continue
+            new_rot = self.query_device_rotation()
+            if new_rot != self.device_rotation:
+                self.device_rotation = new_rot
+                self.notify("Orientação Adaptada", f"Celular girado para {new_rot}° — imagem ajustada.")
+                self.live_switch_stream()
+
+    def _start_subprocesses(self, pipe_name):
+        orient_flag = self.get_orientation_flag()
+        cmd_scrcpy = [
+            self.device_mgr.scrcpy_exe,
+            "--no-window",
+            "--no-audio",
+            "--video-source=camera",
+            f"--camera-id={str(self.camera_id)}",
+            f"--camera-size={self.width}x{self.height}",
+            f"--camera-fps={self.fps}",
+            f"--capture-orientation={orient_flag}",
+            f"--record={pipe_name}",
+            "--record-format=mkv"
+        ]
+
+        if self.selected_device:
+            cmd_scrcpy.extend(["-s", self.selected_device])
+
+        if self.zoom != "1.0":
+            cmd_scrcpy.append(f"--camera-zoom={self.zoom}")
+
+        if self.torch_on and self.is_current_camera_back():
+            cmd_scrcpy.append("--camera-torch")
+
+        cmd_ffmpeg = [
+            self.ffmpeg_exe,
+            "-loglevel", "quiet",
+            "-fflags", "nobuffer",
+            "-flags", "low_delay",
+            "-f", "matroska",
+            "-i", "pipe:0",
+            "-f", "rawvideo",
+            "-pix_fmt", "nv12",
+            "pipe:1"
+        ]
+
+        self.scrcpy_proc = subprocess.Popen(
+            cmd_scrcpy,
+            creationflags=CREATE_NO_WINDOW,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        self.ffmpeg_proc = subprocess.Popen(
+            cmd_ffmpeg,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW
+        )
+
+    def _stop_subprocesses(self):
         if self.scrcpy_proc:
             try:
                 self.scrcpy_proc.terminate()
-                self.scrcpy_proc.wait(timeout=1.5)
+                self.scrcpy_proc.wait(timeout=1.0)
             except Exception:
                 try:
                     self.scrcpy_proc.kill()
@@ -196,28 +235,106 @@ class UniversalWebcamApp:
                     pass
             self.scrcpy_proc = None
 
-        subprocess.run(
-            ["taskkill", "/F", "/IM", "scrcpy.exe"],
-            capture_output=True,
-            creationflags=CREATE_NO_WINDOW
-        )
-        time.sleep(0.2)
+        if self.ffmpeg_proc:
+            try:
+                self.ffmpeg_proc.terminate()
+                self.ffmpeg_proc.wait(timeout=1.0)
+            except Exception:
+                try:
+                    self.ffmpeg_proc.kill()
+                except Exception:
+                    pass
+            self.ffmpeg_proc = None
 
-        self.update_torch_state()
-        cmd_scrcpy = self.build_scrcpy_command()
+        subprocess.run(["taskkill", "/F", "/IM", "scrcpy.exe"], capture_output=True, creationflags=CREATE_NO_WINDOW)
+
+    def _stream_worker(self):
+        pipe_name = r"\\.\pipe\universal_cam_pipe"
+        frame_size = self.width * self.height * 3 // 2
+
+        blank_frame = np.zeros(frame_size, dtype=np.uint8)
+        blank_frame[:self.width * self.height] = 16
+        blank_frame[self.width * self.height:] = 128
+        self._last_frame = blank_frame
+
         try:
-            self.scrcpy_proc = subprocess.Popen(
-                cmd_scrcpy,
-                cwd=os.path.dirname(self.device_mgr.scrcpy_exe),
-                creationflags=CREATE_NO_WINDOW,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            with pyvirtualcam.Camera(
+                width=self.width,
+                height=self.height,
+                fps=self.fps,
+                fmt=pyvirtualcam.PixelFormat.NV12,
+                backend='obs'
+            ) as vcam:
+                self.vcam = vcam
+                self.update_tray(True)
+                self.notify("Webcam Conectada (Puro)", f"{self.device_name} transmitindo a {self.width}x{self.height} @ {self.fps}fps.")
+
+                while self.is_running:
+                    pipe = win32pipe.CreateNamedPipe(
+                        pipe_name,
+                        win32pipe.PIPE_ACCESS_INBOUND,
+                        win32pipe.PIPE_TYPE_BYTE | win32pipe.PIPE_READMODE_BYTE | win32pipe.PIPE_WAIT,
+                        1, 1048576, 1048576, 0, None
+                    )
+                    self.pipe_handle = pipe
+
+                    self._start_subprocesses(pipe_name)
+                    try:
+                        win32pipe.ConnectNamedPipe(pipe, None)
+                    except Exception:
+                        pass
+
+                    pipe_running = True
+                    def forwarder():
+                        while pipe_running and self.is_running:
+                            try:
+                                hr, data = win32file.ReadFile(pipe, 65536)
+                                if data and self.ffmpeg_proc and self.ffmpeg_proc.stdin:
+                                    self.ffmpeg_proc.stdin.write(data)
+                                    self.ffmpeg_proc.stdin.flush()
+                            except Exception:
+                                break
+
+                    t_fwd = threading.Thread(target=forwarder, daemon=True)
+                    t_fwd.start()
+
+                    while self.is_running:
+                        try:
+                            if not self.ffmpeg_proc or not self.ffmpeg_proc.stdout:
+                                break
+                            raw = self.ffmpeg_proc.stdout.read(frame_size)
+                            if len(raw) != frame_size:
+                                break
+                            frame = np.frombuffer(raw, dtype=np.uint8)
+                            self._last_frame = frame
+                            vcam.send(frame)
+                            vcam.sleep_until_next_frame()
+                        except Exception:
+                            break
+
+                    pipe_running = False
+                    self._stop_subprocesses()
+                    try:
+                        win32file.CloseHandle(pipe)
+                    except Exception:
+                        pass
+                    self.pipe_handle = None
+
+                    if self.is_running:
+                        if self._last_frame is not None:
+                            try:
+                                vcam.send(self._last_frame)
+                            except Exception:
+                                pass
+                        time.sleep(0.2)
+
         except Exception as e:
-            self.notify("Erro ao iniciar câmera", str(e))
-            return False
-        return True
+            self.notify("Erro na Câmera Virtual", str(e))
+        finally:
+            self.vcam = None
+            self.is_running = False
+            self.update_tray(False)
+            self._stop_subprocesses()
 
     def start_camera(self):
         if self.is_running:
@@ -228,39 +345,16 @@ class UniversalWebcamApp:
             self.notify("Dispositivo não detectado", "Conecte o smartphone via USB e ative a Depuração USB.")
             return
 
-        self.clean_obs_safemode()
-
-        # 1. Start scrcpy stream in background
-        if not self.start_scrcpy_stream():
-            return
-
-        time.sleep(1.2)
-
-        # 2. Start OBS quietly IF not already running
-        if os.path.exists(OBS_EXE) and not self.is_obs_running():
-            self.clean_obs_safemode()
-            cmd_obs = [
-                OBS_EXE,
-                "--collection", "GalaxyWebcam",
-                "--startvirtualcam",
-                "--minimize-to-tray"
-            ]
-            try:
-                self.obs_proc = subprocess.Popen(
-                    cmd_obs,
-                    cwd=OBS_DIR,
-                    creationflags=CREATE_NO_WINDOW,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-            except Exception as e:
-                print("OBS startup error:", e)
-
         self.is_running = True
-        self.update_tray(True)
-        rec_msg = " (Gravando MP4)" if self.is_recording else ""
-        self.notify("Webcam Conectada", f"{self.device_name} ativo via USB{rec_msg}.")
+        self.device_rotation = self.query_device_rotation()
+        self.update_torch_state()
+
+        self.stream_thread = threading.Thread(target=self._stream_worker, daemon=True)
+        self.stream_thread.start()
+
+        self.orient_thread = threading.Thread(target=self._orientation_watcher, daemon=True)
+        self.orient_thread.start()
+
         if self.tray_icon:
             try:
                 self.tray_icon.update_menu()
@@ -271,31 +365,15 @@ class UniversalWebcamApp:
         if not self.is_running:
             return
 
-        if self.scrcpy_proc:
-            try:
-                self.scrcpy_proc.terminate()
-                self.scrcpy_proc.wait(timeout=1.5)
-            except Exception:
-                try:
-                    self.scrcpy_proc.kill()
-                except Exception:
-                    pass
-            self.scrcpy_proc = None
+        self.is_running = False
+        self._stop_subprocesses()
 
-        if self.obs_proc:
+        if self.pipe_handle:
             try:
-                self.obs_proc.terminate()
-                self.obs_proc.wait(timeout=1.5)
+                win32file.CloseHandle(self.pipe_handle)
             except Exception:
-                try:
-                    self.obs_proc.kill()
-                except Exception:
-                    pass
-            self.obs_proc = None
-
-        subprocess.run(["taskkill", "/F", "/IM", "scrcpy.exe"], capture_output=True, creationflags=CREATE_NO_WINDOW)
-        subprocess.run(["taskkill", "/F", "/IM", "obs64.exe"], capture_output=True, creationflags=CREATE_NO_WINDOW)
-        self.clean_obs_safemode()
+                pass
+            self.pipe_handle = None
 
         adb = [self.device_mgr.adb_exe]
         if self.selected_device:
@@ -305,13 +383,7 @@ class UniversalWebcamApp:
         except Exception:
             pass
 
-        self.is_running = False
         self.update_tray(False)
-
-        if self.is_recording and self.current_record_file:
-            self.notify("Gravação Salva", f"Arquivo salvo em:\n{os.path.basename(self.current_record_file)}")
-            self.current_record_file = None
-
         self.notify("Webcam Desconectada", "Transmissão encerrada.")
         if self.tray_icon:
             try:
@@ -320,17 +392,16 @@ class UniversalWebcamApp:
                 pass
 
     def live_switch_stream(self):
-        """Smoothly switches the camera feed in < 0.4s WITHOUT stopping OBS Virtual Camera!"""
         if not self.is_running:
             return
 
         with self._switch_lock:
-            self.start_scrcpy_stream()
+            self.update_torch_state()
+            self._stop_subprocesses()
 
     def set_camera_id(self, cam_id):
         self.camera_id = str(cam_id)
         self.notify("Lente Selecionada", f"Lente ID {cam_id} ativada.")
-        self.update_torch_state()
         self.live_switch_stream()
         if self.tray_icon:
             try:
@@ -368,10 +439,12 @@ class UniversalWebcamApp:
             except Exception:
                 pass
 
-    def toggle_desk_view(self):
-        self.is_desk_view = not self.is_desk_view
-        status = "Ativado (180° Invertido)" if self.is_desk_view else "Desativado"
-        self.notify("Modo Mesa / Documentos", f"Modo Mesa: {status}")
+    def toggle_auto_rotate(self):
+        self.auto_rotate = not self.auto_rotate
+        status = "Ativado (Adaptar ao Celular)" if self.auto_rotate else "Desativado (Fixo)"
+        self.notify("Auto-Rotação", status)
+        if self.auto_rotate:
+            self.device_rotation = self.query_device_rotation()
         self.live_switch_stream()
         if self.tray_icon:
             try:
@@ -379,10 +452,32 @@ class UniversalWebcamApp:
             except Exception:
                 pass
 
-    def toggle_mic(self):
-        self.use_mic = not self.use_mic
-        status = "Ativado (USB Direct)" if self.use_mic else "Desativado"
-        self.notify("Microfone USB", f"Áudio via USB: {status}")
+    def set_manual_rotation(self, deg):
+        self.manual_rotation = deg
+        self.auto_rotate = False
+        self.notify("Orientação da Imagem", f"Ângulo fixado em {deg}°")
+        self.live_switch_stream()
+        if self.tray_icon:
+            try:
+                self.tray_icon.update_menu()
+            except Exception:
+                pass
+
+    def rotate_90(self):
+        self.manual_rotation = (self.manual_rotation + 90) % 360
+        self.auto_rotate = False
+        self.notify("Girar 90°", f"Orientação ajustada para {self.manual_rotation}°")
+        self.live_switch_stream()
+        if self.tray_icon:
+            try:
+                self.tray_icon.update_menu()
+            except Exception:
+                pass
+
+    def toggle_desk_view(self):
+        self.is_desk_view = not self.is_desk_view
+        status = "Ativado (180° Invertido)" if self.is_desk_view else "Desativado"
+        self.notify("Modo Mesa / Documentos", f"Modo Mesa: {status}")
         self.live_switch_stream()
         if self.tray_icon:
             try:
@@ -398,9 +493,7 @@ class UniversalWebcamApp:
         else:
             msg = "Iluminação Desligada"
         self.notify("Iluminação / Ring Light", msg)
-        self.update_torch_state()
-        if is_back:
-            self.live_switch_stream()
+        self.live_switch_stream()
         if self.tray_icon:
             try:
                 self.tray_icon.update_menu()
@@ -429,22 +522,15 @@ class UniversalWebcamApp:
             except Exception:
                 pass
 
-    def toggle_recording(self):
-        self.is_recording = not self.is_recording
-        status = "Iniciada" if self.is_recording else "Encerrada"
-        self.notify("Gravação Local MP4", f"Gravação em disco: {status}")
-        self.live_switch_stream()
-        if self.tray_icon:
-            try:
-                self.tray_icon.update_menu()
-            except Exception:
-                pass
-
-    def set_resolution(self, res, fps="30"):
-        self.resolution = res
+    def set_resolution(self, w, h, fps=30):
+        self.width = w
+        self.height = h
         self.fps = fps
-        self.notify("Resolução", f"Qualidade alterada para {res} ({fps} FPS)")
-        self.live_switch_stream()
+        self.notify("Resolução", f"Qualidade alterada para {w}x{h} ({fps} FPS)")
+        if self.is_running:
+            self.stop_camera()
+            time.sleep(0.5)
+            self.start_camera()
         if self.tray_icon:
             try:
                 self.tray_icon.update_menu()
@@ -470,11 +556,11 @@ class UniversalWebcamApp:
             '<ctrl>+<alt>+2': lambda: self.set_camera_id("0"),
             '<ctrl>+<alt>+3': lambda: self.set_camera_id("2"),
             '<ctrl>+<alt>+z': self.cycle_zoom,
+            '<ctrl>+<alt>+o': self.rotate_90,
             '<ctrl>+<alt>+m': self.toggle_mute,
             '<ctrl>+<alt>+f': self.toggle_mirror,
             '<ctrl>+<alt>+d': self.toggle_desk_view,
             '<ctrl>+<alt>+l': self.toggle_torch,
-            '<ctrl>+<alt>+r': self.toggle_recording,
         }
         try:
             self.hotkeys_listener = keyboard.GlobalHotKeys(hotkeys_map)
@@ -483,7 +569,6 @@ class UniversalWebcamApp:
             print("Hotkey listener error:", e)
 
     def build_camera_menu_items(self):
-        # Closure factories to avoid Python lambda variable late-binding bug with pystray signatures
         def on_cam(cid):
             return lambda icon, item: self.set_camera_id(cid)
 
@@ -511,16 +596,22 @@ class UniversalWebcamApp:
         def is_zoom(z):
             return lambda item: str(self.zoom) == str(z)
 
-        def on_res(r, f):
-            return lambda icon, item: self.set_resolution(r, f)
+        def on_res(w, h, f):
+            return lambda icon, item: self.set_resolution(w, h, f)
 
-        def is_res(r):
-            return lambda item: str(self.resolution) == str(r)
+        def is_res(w):
+            return lambda item: self.width == w
+
+        def on_rot(deg):
+            return lambda icon, item: self.set_manual_rotation(deg)
+
+        def is_rot(deg):
+            return lambda item: not self.auto_rotate and self.manual_rotation == deg
 
         return Menu(
             item(f"📱 {self.device_name}", None, enabled=False),
             Menu.SEPARATOR,
-            item("🟢 Iniciar Webcam", lambda icon, it: self.start_camera(), visible=lambda it: not self.is_running),
+            item("🟢 Iniciar Webcam (Puro - Sem OBS)", lambda icon, it: self.start_camera(), visible=lambda it: not self.is_running),
             item("🛑 Parar Webcam", lambda icon, it: self.stop_camera(), visible=lambda it: self.is_running),
             Menu.SEPARATOR,
             item("📷 Selecionar Lente", Menu(lambda: self.build_camera_menu_items())),
@@ -530,17 +621,24 @@ class UniversalWebcamApp:
                 item("2.0x (Foco em Detalhes)", on_zoom("2.0"), checked=is_zoom("2.0"), radio=True),
                 item("3.0x (Telefoto)", on_zoom("3.0"), checked=is_zoom("3.0"), radio=True)
             )),
+            item("🔄 Orientação da Imagem", Menu(
+                item("🔄 Auto-Adaptar (Detectar Giro do Celular)", lambda icon, it: self.toggle_auto_rotate(), checked=lambda it: self.auto_rotate),
+                item("↷ Girar 90° [Ctrl+Alt+O]", lambda icon, it: self.rotate_90()),
+                Menu.SEPARATOR,
+                item("0° (Normal - Em pé)", on_rot(0), checked=is_rot(0), radio=True),
+                item("90° (Deitado - Lateral Direita)", on_rot(90), checked=is_rot(90), radio=True),
+                item("180° (Invertido - Cabo por cima)", on_rot(180), checked=is_rot(180), radio=True),
+                item("270° (Deitado - Lateral Esquerda)", on_rot(270), checked=is_rot(270), radio=True)
+            )),
             item("🪞 Modo Espelho (Flip Horizontal) [Ctrl+Alt+F]", lambda icon, it: self.toggle_mirror(), checked=lambda it: self.is_mirrored),
             item("📄 Modo Mesa / Documentos (180°) [Ctrl+Alt+D]", lambda icon, it: self.toggle_desk_view(), checked=lambda it: self.is_desk_view),
             item("🛑 Modo Privacidade (Mutar Vídeo) [Ctrl+Alt+M]", lambda icon, it: self.toggle_mute(), checked=lambda it: self.is_muted),
             Menu.SEPARATOR,
-            item("🎙️ Microfone USB Direct", lambda icon, it: self.toggle_mic(), checked=lambda it: self.use_mic),
             item("💡 Lanterna / Ring Light [Ctrl+Alt+L]", lambda icon, it: self.toggle_torch(), checked=lambda it: self.torch_on),
-            item("⏺️ Gravação Local MP4 [Ctrl+Alt+R]", lambda icon, it: self.toggle_recording(), checked=lambda it: self.is_recording),
             Menu.SEPARATOR,
             item("📐 Resolução", Menu(
-                item("720p (HD 30fps) - Recomendado", on_res("1280x720", "30"), checked=is_res("1280x720"), radio=True),
-                item("1080p (Full HD 30fps) - Alta Definição", on_res("1920x1080", "30"), checked=is_res("1920x1080"), radio=True)
+                item("720p (HD 30fps) - Recomendado / Zero Latência", on_res(1280, 720, 30), checked=is_res(1280), radio=True),
+                item("1080p (Full HD 30fps) - Alta Definição", on_res(1920, 1080, 30), checked=is_res(1920), radio=True)
             )),
             item("📁 Abrir Pasta de Gravações", lambda icon, it: os.startfile(RECORDINGS_DIR)),
             Menu.SEPARATOR,
@@ -565,7 +663,7 @@ class UniversalWebcamApp:
         self.tray_icon = pystray.Icon(
             "AndroidWebcamPro",
             self.icon_off,
-            "Universal Android Webcam Pro",
+            "Universal Android Webcam Pro (Puro)",
             menu=self.build_menu()
         )
         self.tray_icon.run(on_setup)
