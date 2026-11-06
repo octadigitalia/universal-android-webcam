@@ -23,6 +23,7 @@ if sys.stderr is None:
 from PIL import Image
 import pystray
 from pystray import MenuItem as item, Menu
+import numpy as np
 import pyvirtualcam
 
 try:
@@ -91,9 +92,9 @@ class UniversalWebcamApp:
         self._switch_lock = threading.Lock()
 
     def _init_black_frame(self):
-        y_plane = b'\x00' * (self.width * self.height)
-        uv_plane = b'\x80' * (self.width * self.height // 2)
-        self._black_frame = y_plane + uv_plane
+        y_plane = np.zeros((self.height, self.width), dtype=np.uint8)
+        uv_plane = np.full((self.height // 2, self.width), 128, dtype=np.uint8)
+        self._black_frame = np.vstack([y_plane, uv_plane])
 
     def refresh_devices_and_cameras(self, force=False):
         """Scans for connected devices and cameras."""
@@ -313,7 +314,7 @@ class UniversalWebcamApp:
 
     def _stream_loop(self):
         frame_size = self.width * self.height * 3 // 2
-        if self.last_frame is None or len(self.last_frame) != frame_size:
+        if self.last_frame is None or self.last_frame.shape != (self.height * 3 // 2, self.width):
             self.last_frame = self._black_frame
 
         while self.is_running:
@@ -331,13 +332,14 @@ class UniversalWebcamApp:
                     time.sleep(0.033)
                     continue
 
-                frame = self._read_exact(p_ffmpeg.stdout, frame_size)
-                if frame:
+                raw = self._read_exact(p_ffmpeg.stdout, frame_size)
+                if raw:
+                    frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height * 3 // 2, self.width))
                     self.last_frame = frame
                     if self.vcam:
                         self.vcam.send(frame)
                 else:
-                    if self.vcam and self.last_frame:
+                    if self.vcam and self.last_frame is not None:
                         self.vcam.send(self.last_frame)
                     time.sleep(0.033)
 
