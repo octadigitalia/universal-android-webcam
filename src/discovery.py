@@ -28,6 +28,7 @@ class DeviceManager:
         self.base_dir = base_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.adb_exe = find_binary("adb.exe", self.base_dir)
         self.scrcpy_exe = find_binary("scrcpy.exe", self.base_dir)
+        self._camera_cache = {}
 
     def get_connected_devices(self):
         """Returns a list of connected Android devices: [{'serial': ..., 'name': ...}]."""
@@ -62,8 +63,11 @@ class DeviceManager:
             pass
         return devices
 
-    def get_device_cameras(self, serial=None):
-        """Discovers all physical cameras on the specified device."""
+    def get_device_cameras(self, serial=None, force_refresh=False):
+        """Discovers all physical cameras on the specified device with caching."""
+        cache_key = serial or "default"
+        if not force_refresh and cache_key in self._camera_cache:
+            return self._camera_cache[cache_key]
         cmd = [self.scrcpy_exe]
         if serial:
             cmd.extend(["-s", serial])
@@ -109,4 +113,5 @@ class DeviceManager:
                 {"id": "1", "facing": "front", "label": "🤳 Câmera Frontal (Padrão)"},
                 {"id": "0", "facing": "back", "label": "📸 Câmera Traseira (Padrão)"}
             ]
+        self._camera_cache[cache_key] = cams
         return cams
