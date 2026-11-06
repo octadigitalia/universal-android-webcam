@@ -28,6 +28,7 @@ class DeviceManager:
         self.base_dir = base_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.adb_exe = find_binary("adb.exe", self.base_dir)
         self.scrcpy_exe = find_binary("scrcpy.exe", self.base_dir)
+        self.ffmpeg_exe = find_binary("ffmpeg.exe", self.base_dir)
         self._camera_cache = {}
 
     def get_connected_devices(self):
