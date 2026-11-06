@@ -16,9 +16,9 @@ else:
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 if sys.stdout is None:
-    sys.stdout = open(os.path.join(LOGS_DIR, "app.log"), "a", encoding="utf-8", buffering=1)
+    sys.stdout = open(os.path.join(LOGS_DIR, "app.log"), "a", encoding="utf-8")
 if sys.stderr is None:
-    sys.stderr = open(os.path.join(LOGS_DIR, "error.log"), "a", encoding="utf-8", buffering=1)
+    sys.stderr = open(os.path.join(LOGS_DIR, "error.log"), "a", encoding="utf-8")
 
 from PIL import Image
 import pystray
@@ -266,6 +266,11 @@ class UniversalWebcamApp:
             win32pipe.ConnectNamedPipe(pipe, None)
         except Exception:
             try:
+                if self.ffmpeg_proc and self.ffmpeg_proc.stdin:
+                    try:
+                        self.ffmpeg_proc.stdin.close()
+                    except Exception:
+                        pass
                 win32file.CloseHandle(pipe)
             except Exception:
                 pass
@@ -303,6 +308,11 @@ class UniversalWebcamApp:
                 except Exception:
                     break
             try:
+                if self.ffmpeg_proc and self.ffmpeg_proc.stdin:
+                    try:
+                        self.ffmpeg_proc.stdin.close()
+                    except Exception:
+                        pass
                 win32file.CloseHandle(pipe)
             except Exception:
                 pass
@@ -351,6 +361,11 @@ class UniversalWebcamApp:
                 pass
             try:
                 if p_ffmpeg:
+                    if p_ffmpeg.stdin:
+                        try:
+                            p_ffmpeg.stdin.close()
+                        except Exception:
+                            pass
                     p_ffmpeg.terminate()
                     p_ffmpeg.wait(timeout=0.5)
             except Exception:
