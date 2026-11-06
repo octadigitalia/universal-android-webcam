@@ -58,6 +58,7 @@ class UniversalWebcamApp:
         self.orient_thread = None
         self.stop_stream_event = threading.Event()
         self.last_frame = None
+        self._black_frame = None
 
         # Device & Lens State
         self.selected_device = None  # serial
@@ -69,6 +70,8 @@ class UniversalWebcamApp:
         self.resolution = "1280x720"
         self.fps = 30
         self.zoom = "1.0"
+
+        self._init_black_frame()
 
         # Orientation & Adaptation
         self.auto_rotate = True    # Detects physical device rotation
@@ -86,6 +89,11 @@ class UniversalWebcamApp:
         self.tray_icon = None
         self.hotkeys_listener = None
         self._switch_lock = threading.Lock()
+
+    def _init_black_frame(self):
+        y_plane = b'\x00' * (self.width * self.height)
+        uv_plane = b'\x80' * (self.width * self.height // 2)
+        self._black_frame = y_plane + uv_plane
 
     def refresh_devices_and_cameras(self, force=False):
         """Scans for connected devices and cameras."""
@@ -110,16 +118,38 @@ class UniversalWebcamApp:
         return str(self.camera_id) in ["0", "2"]
 
     def query_device_rotation(self):
-        """Queries physical orientation from Android WindowManager."""
+        """Queries physical orientation directly from hardware sensors (Device Orientation)."""
         if not self.selected_device:
             return self.device_rotation
+
+        # 1. Hardware sensor
+        try:
+            res = subprocess.run(
+                [self.device_mgr.adb_exe, "-s", self.selected_device, "shell", "dumpsys sensorservice"],
+                capture_output=True,
+                text=True,
+                creationflags=CREATE_NO_WINDOW,
+                timeout=1.5
+            )
+            m = re.findall(r"Device Orient[^\n]*last 50 events[^\n]*\n((?:[^\n]+\n){1,55})", res.stdout)
+            if m:
+                vals = re.findall(r"\(\s*ts=[^)]+\)\s*(-?\d+)\.\d+", m[0])
+                for v_str in reversed(vals):
+                    v = int(v_str)
+                    if v >= 0:
+                        rot_deg = (360 - (v * 90)) % 360 if v in [1, 3] else (v * 90) % 360
+                        return rot_deg
+        except Exception:
+            pass
+
+        # 2. WindowManager fallback
         try:
             res = subprocess.run(
                 [self.device_mgr.adb_exe, "-s", self.selected_device, "shell", "dumpsys window | grep mCurrentRotation"],
                 capture_output=True,
                 text=True,
                 creationflags=CREATE_NO_WINDOW,
-                timeout=2.0
+                timeout=1.0
             )
             m = re.search(r"mCurrentRotation=ROTATION_(\d+)", res.stdout)
             if m:
@@ -127,6 +157,7 @@ class UniversalWebcamApp:
                 return (rot_code * 90) % 360
         except Exception:
             pass
+
         return self.device_rotation
 
     def get_effective_rotation(self):
@@ -147,7 +178,6 @@ class UniversalWebcamApp:
         try:
             if self.torch_on:
                 if not is_back:
-                    # Front camera screen Ring Light
                     subprocess.run([self.device_mgr.adb_exe, "-s", self.selected_device, "shell", "input keyevent KEYCODE_WAKEUP"], capture_output=True, creationflags=CREATE_NO_WINDOW)
                     subprocess.run([self.device_mgr.adb_exe, "-s", self.selected_device, "shell", "settings put system screen_brightness_mode 0 && settings put system screen_brightness 255"], capture_output=True, creationflags=CREATE_NO_WINDOW)
             else:
@@ -171,7 +201,8 @@ class UniversalWebcamApp:
         orient_flag = self.get_orientation_flag()
         cmd = [
             self.device_mgr.scrcpy_exe,
-            "--no-audio",
+            "--no-audio",              # Silences audio capture completely
+            "--no-audio-playback",     # NEVER plays audio to laptop speakers (avoids microfonia)
             "--video-source=camera",
             f"--camera-id={str(self.camera_id)}",
             f"--camera-size={self.resolution}",
@@ -283,9 +314,7 @@ class UniversalWebcamApp:
     def _stream_loop(self):
         frame_size = self.width * self.height * 3 // 2
         if self.last_frame is None or len(self.last_frame) != frame_size:
-            y_plane = b'\x00' * (self.width * self.height)
-            uv_plane = b'\x80' * (self.width * self.height // 2)
-            self.last_frame = y_plane + uv_plane
+            self.last_frame = self._black_frame
 
         while self.is_running:
             self.stop_stream_event.clear()
@@ -296,6 +325,12 @@ class UniversalWebcamApp:
                 continue
 
             while not self.stop_stream_event.is_set() and self.is_running:
+                if self.is_muted:
+                    if self.vcam:
+                        self.vcam.send(self._black_frame)
+                    time.sleep(0.033)
+                    continue
+
                 frame = self._read_exact(p_ffmpeg.stdout, frame_size)
                 if frame:
                     self.last_frame = frame
@@ -351,7 +386,7 @@ class UniversalWebcamApp:
         self.stream_thread.start()
 
         self.update_tray(True)
-        self.notify("Android Webcam Pro Ativa", f"{self.device_name} conectado a {self.resolution} via USB.")
+        self.notify("Android Webcam Pro Ativa", f"{self.device_name} conectado a {self.resolution} via USB. Sem áudio nos alto-falantes.")
         self.update_menu_state()
 
     def stop_camera(self):
@@ -436,7 +471,7 @@ class UniversalWebcamApp:
 
     def toggle_auto_rotate(self):
         self.auto_rotate = not self.auto_rotate
-        status = "Ativado (Adaptar ao Celular)" if self.auto_rotate else "Desativado (Fixo)"
+        status = "Ativado (Detectar Giro do Celular)" if self.auto_rotate else "Desativado (Fixo)"
         self.notify("Auto-Rotação", status)
         if self.auto_rotate:
             self.device_rotation = self.query_device_rotation()
@@ -479,17 +514,7 @@ class UniversalWebcamApp:
 
     def toggle_mute(self):
         self.is_muted = not self.is_muted
-        val = "1" if self.is_muted else "0"
-        if self.selected_device:
-            try:
-                subprocess.run(
-                    [self.device_mgr.adb_exe, "-s", self.selected_device, "shell", f"cmd media.camera set-camera-mute {val}"],
-                    capture_output=True,
-                    creationflags=CREATE_NO_WINDOW
-                )
-            except Exception:
-                pass
-        status = "VÍDEO MUTADO (Privacidade)" if self.is_muted else "Vídeo Ativo"
+        status = "VÍDEO MUTADO (Tela Preta de Privacidade)" if self.is_muted else "Vídeo Reativado"
         self.notify("Modo Privacidade", status)
         self.update_menu_state()
 
@@ -506,6 +531,7 @@ class UniversalWebcamApp:
         self.width = w
         self.height = h
         self.fps = fps
+        self._init_black_frame()
         self.notify("Resolução", f"Qualidade alterada para {res} ({fps} FPS)")
         if self.is_running:
             self.stop_camera()
