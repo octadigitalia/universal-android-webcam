@@ -55,11 +55,14 @@ class UniversalWebcamApp:
         self.ffmpeg_proc = None
         self.vcam = None
 
-        self.stream_thread = None
+        self.producer_thread = None
+        self.consumer_thread = None
         self.orient_thread = None
         self.stop_stream_event = threading.Event()
-        self.last_frame = None
+        
+        self.current_frame = None
         self._black_frame = None
+        self._frame_lock = threading.Lock()
 
         # Device & Lens State
         self.selected_device = None  # serial
@@ -132,14 +135,16 @@ class UniversalWebcamApp:
                 creationflags=CREATE_NO_WINDOW,
                 timeout=1.5
             )
-            m = re.findall(r"Device Orient[^\n]*last 50 events[^\n]*\n((?:[^\n]+\n){1,55})", res.stdout)
-            if m:
-                vals = re.findall(r"\(\s*ts=[^)]+\)\s*(-?\d+)\.\d+", m[0])
-                for v_str in reversed(vals):
-                    v = int(v_str)
-                    if v >= 0:
-                        rot_deg = (360 - (v * 90)) % 360 if v in [1, 3] else (v * 90) % 360
-                        return rot_deg
+            section = re.search(r"Device Orient[^\n]*last 50 events.*?\n(.*?)(?:\n\S|\Z)", res.stdout, re.DOTALL)
+            if section:
+                lines = section.group(1).strip().splitlines()
+                for l in reversed(lines):
+                    m = re.search(r"\(\s*ts=[^)]+\)\s*(-?\d+)\.\d+", l)
+                    if m:
+                        v = int(m.group(1))
+                        if v >= 0:
+                            rot_deg = (360 - (v * 90)) % 360 if v in [1, 3] else (v * 90) % 360
+                            return rot_deg
         except Exception:
             pass
 
@@ -189,13 +194,13 @@ class UniversalWebcamApp:
 
     def _orientation_watcher(self):
         while self.is_running:
-            time.sleep(1.0)
+            time.sleep(0.6)
             if not self.auto_rotate or not self.is_running:
                 continue
             new_rot = self.query_device_rotation()
             if new_rot != self.device_rotation:
                 self.device_rotation = new_rot
-                self.notify("Orientação Adaptada", f"Celular girado para {new_rot}° — imagem ajustada.")
+                self.notify("Orientação Adaptada", f"Celular girado para {new_rot}° — adaptando imagem.")
                 self.live_switch_stream()
 
     def build_scrcpy_command(self, pipe_name):
@@ -266,11 +271,6 @@ class UniversalWebcamApp:
             win32pipe.ConnectNamedPipe(pipe, None)
         except Exception:
             try:
-                if self.ffmpeg_proc and self.ffmpeg_proc.stdin:
-                    try:
-                        self.ffmpeg_proc.stdin.close()
-                    except Exception:
-                        pass
                 win32file.CloseHandle(pipe)
             except Exception:
                 pass
@@ -322,36 +322,45 @@ class UniversalWebcamApp:
 
         return self.scrcpy_proc, self.ffmpeg_proc, t_pipe
 
-    def _stream_loop(self):
+    def _vcam_consumer_loop(self):
+        """Continuously feeds NV12 frames to the Virtual Camera at a rock-solid 30 FPS clock."""
+        frame_interval = 1.0 / self.fps
+        while self.is_running:
+            t0 = time.perf_counter()
+            if self.vcam:
+                if self.is_muted:
+                    self.vcam.send(self._black_frame)
+                else:
+                    with self._frame_lock:
+                        frame_to_send = self.current_frame if self.current_frame is not None else self._black_frame
+                    try:
+                        self.vcam.send(frame_to_send)
+                    except Exception:
+                        pass
+
+            elapsed = time.perf_counter() - t0
+            sleep_time = max(0.001, frame_interval - elapsed)
+            time.sleep(sleep_time)
+
+    def _stream_producer_loop(self):
         frame_size = self.width * self.height * 3 // 2
-        if self.last_frame is None or self.last_frame.shape != (self.height * 3 // 2, self.width):
-            self.last_frame = self._black_frame
 
         while self.is_running:
             self.stop_stream_event.clear()
             p_scrcpy, p_ffmpeg, t_pipe = self._start_pipeline_processes()
 
             if not p_ffmpeg or not p_ffmpeg.stdout:
-                time.sleep(0.5)
+                time.sleep(0.3)
                 continue
 
             while not self.stop_stream_event.is_set() and self.is_running:
-                if self.is_muted:
-                    if self.vcam:
-                        self.vcam.send(self._black_frame)
-                    time.sleep(0.033)
-                    continue
-
                 raw = self._read_exact(p_ffmpeg.stdout, frame_size)
                 if raw:
                     frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height * 3 // 2, self.width))
-                    self.last_frame = frame
-                    if self.vcam:
-                        self.vcam.send(frame)
+                    with self._frame_lock:
+                        self.current_frame = frame
                 else:
-                    if self.vcam and self.last_frame is not None:
-                        self.vcam.send(self.last_frame)
-                    time.sleep(0.033)
+                    time.sleep(0.01)
 
             try:
                 if p_scrcpy:
@@ -396,14 +405,20 @@ class UniversalWebcamApp:
         self.device_rotation = self.query_device_rotation()
         self.stop_stream_event.clear()
 
+        # 1. Start dedicated Consumer thread (keeps Meet feed alive 100% of the time)
+        self.consumer_thread = threading.Thread(target=self._vcam_consumer_loop, daemon=True)
+        self.consumer_thread.start()
+
+        # 2. Start Producer thread
+        self.producer_thread = threading.Thread(target=self._stream_producer_loop, daemon=True)
+        self.producer_thread.start()
+
+        # 3. Start Orientation Watcher thread
         self.orient_thread = threading.Thread(target=self._orientation_watcher, daemon=True)
         self.orient_thread.start()
 
-        self.stream_thread = threading.Thread(target=self._stream_loop, daemon=True)
-        self.stream_thread.start()
-
         self.update_tray(True)
-        self.notify("Android Webcam Pro Ativa", f"{self.device_name} conectado a {self.resolution} via USB. Sem áudio nos alto-falantes.")
+        self.notify("Android Webcam Pro Ativa", f"{self.device_name} conectado a {self.resolution} via USB.")
         self.update_menu_state()
 
     def stop_camera(self):
