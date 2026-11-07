@@ -1,89 +1,159 @@
 # 📱 Universal Android Webcam Pro
 
-Transform **any Android smartphone** into an ultra-low latency, professional webcam for Windows via USB. Designed for **Google Meet, Zoom, Microsoft Teams, Discord, CapCut, OBS**, and browsers.
+Transform **any Android smartphone** into an ultra-low latency, studio-grade webcam and USB microphone for Windows. Designed for **Google Meet, Zoom, Microsoft Teams, Discord, OBS, CapCut**, and browsers.
 
-[English](#features) | [Português](#recursos-em-português)
+100% Pure Software. **Zero OBS Studio dependency required to run.**
 
----
-
-## ⚡ Highlights
-
-* **Zero Latency (~25-35 ms):** Direct USB transfer using Android hardware-accelerated H.264 video encoding (`MediaCodec`).
-* **100% Device-Agnostic:** Auto-detects connected phone brand, model, and physical camera sensors (Front, Back 50MP, Ultra-Wide 0.6x, Telephoto).
-* **System Tray Control:** Runs unobtrusively in the Windows notification area (near the clock).
-* **Global Hotkeys:** Switch lenses, toggle zoom, flip mirror mode, or mute video without leaving your call.
-* **Studio USB Microphone:** Route the smartphone's noise-cancelling dual microphones to PC over USB.
-* **Hardware Fill Light:** Toggle the phone's LED flash as a ring light for low-light environments.
-* **Lossless Local MP4 Recording:** Record high-bitrate video directly to your PC while in a call.
+[🇧🇷 Guia Completo em Português](#-guia-em-português) | [English Documentation](#-english-documentation)
 
 ---
 
-## ⌨️ Global Hotkeys
+## ⚡ Highlights / Destaques
 
-| Shortcut | Action | Description |
+* **⚡ Ultra-Low Latency (~20-35 ms):** Direct USB communication using hardware-accelerated H.264 video decoding.
+* **🚫 100% Standalone (Zero OBS Needed):** Uses an embedded DirectShow virtual camera module. You do **not** need OBS Studio open or installed.
+* **🔄 Adaptive Auto-Rotation (9:16 & 16:9):** Detects when you turn your phone physically in real time.
+  * **Phone upright (vertical):** Automatic 9:16 portrait view (`360x640`).
+  * **Phone landscape (horizontal):** Automatic 16:9 widescreen view (`640x360`).
+  * **Auto-Letterbox:** Video stream to Google Meet/Zoom stays locked at standard 1280x720, preventing stretching or aspect ratio skew.
+* **🎙️ Smart Virtual Microphone (Zero Microfonia):** Transmits high-fidelity 48kHz audio from your phone directly to your calls **without playing through your PC speakers**, completely eliminating feedback and echo.
+* **📸 Live Seamless Lens Switching:** Switch between Front (Selfie), Main Back (50MP), and Ultra-Wide (0.6x) with a decoupled 30 FPS consumer thread that **never freezes or disconnects in Google Meet**.
+* **💡 Ring Light & Hardware Torch:** Use your phone's LED flash as a physical ring light, or maximum screen brightness when on the front camera.
+* **🪞 Natural Mirror Flip & Desk View:** Horizontal mirror mode for natural eye contact, or 180° inversion for presenting documents and desk drawings.
+* **🛡️ Privacy Mode:** Instant in-stream video blackout (`Ctrl + Alt + M`).
+* **📦 All-in-One Portable Executable:** Missing dependencies (DirectShow filter and Virtual Microphone) are automatically provisioned on the fly with 1 click.
+
+---
+
+# 🇧🇷 Guia em Português
+
+O **Universal Android Webcam Pro** transforma qualquer celular Android em uma webcam profissional e microfone de estúdio de altíssima definição, conectado diretamente pelo cabo USB ao Windows.
+
+### 🌟 Por que ele é diferente de outros apps (DroidCam, Camo, Iriun)?
+1. **Sem apps instalados no celular:** Você não precisa instalar nenhum APK na Play Store. O app se conecta diretamente à API nativa de câmeras do Android via ADB.
+2. **Sem anúncios, sem assinaturas e sem marcas d'água:** 100% gratuito e open-source.
+3. **Zero OBS aberto:** Funciona com software puro e leve na bandeja do Windows (ao lado do relógio).
+4. **Troca de lente contínua:** Você pode alternar entre a câmera frontal, traseira e grande-angular (0.6x) no meio da reunião sem que a imagem trave no Google Meet.
+5. **Orientação Inteligente:** Gire o celular de pé ou deitado e a imagem se ajusta instantaneamente sem ficar deitada ou esticada.
+
+---
+
+### 🚀 Como Usar (Passo a Passo)
+
+#### 1. Ativar a Depuração USB no seu Celular (Apenas uma vez)
+1. No seu smartphone Android, abra as **Configurações**.
+2. Vá em **Sobre o telefone** > **Informações do software**.
+3. Toque **7 vezes seguidas** em **Número de compilação** até aparecer a mensagem *"Você agora é um desenvolvedor"*.
+4. Volte ao menu principal de Configurações, abra **Opções do desenvolvedor** e ative a chave **Depuração USB**.
+
+#### 2. Conectar e Iniciar
+1. Baixe o pacote mais recente na aba **[Releases](https://github.com/octadigitalia/universal-android-webcam/releases)** (`AndroidWebcamPro-vX.X.X-win64.zip`).
+2. Extraia o arquivo zip e dê dois cliques em `AndroidWebcamPro.exe`.
+3. Conecte o celular ao computador com o cabo USB (se o celular pedir autorização para depuração USB, toque em *"Permitir sempre"*).
+4. O ícone da câmera aparecerá na **bandeja do sistema** (perto do relógio do Windows).
+5. Clique com o botão direito no ícone e selecione **🟢 Iniciar Webcam**.
+
+#### 3. Configurar no Google Meet, Zoom ou Microsoft Teams
+Abra as configurações de áudio e vídeo da sua chamada:
+* **Vídeo (Câmera):** Selecione **`OBS Virtual Camera`**.
+* **Áudio (Microfone):** Selecione **`CABLE Output (VB-Audio Virtual Cable)`**.
+  *(Se você ainda não tiver o driver de áudio virtual, o próprio aplicativo perguntará se deseja instalar automaticamente em 1 clique).*
+
+---
+
+### ⌨️ Atalhos de Teclado Globais
+
+Você pode controlar a câmera a qualquer momento pelo teclado sem precisar sair da janela da reunião:
+
+| Atalho | Ação | Descrição |
 | :--- | :--- | :--- |
-| `Ctrl + Alt + 1` | 🤳 **Front Camera** | Switches to the selfie camera. |
-| `Ctrl + Alt + 2` | 📸 **Main Camera** | Switches to the primary high-resolution back camera. |
-| `Ctrl + Alt + 3` | 🔭 **Ultra-Wide** | Switches to 0.6x wide lens (great for room capture). |
-| `Ctrl + Alt + Z` | 🔍 **Cycle Zoom** | Cycles: `1.0x` ➔ `1.5x` ➔ `2.0x` ➔ `3.0x`. |
-| `Ctrl + Alt + F` | 🪞 **Mirror Mode** | Toggles horizontal flip (natural mirror look). |
-| `Ctrl + Alt + D` | 📄 **Desk View (180°)** | Inverts 180° for document/desk presentation. |
-| `Ctrl + Alt + M` | 🛑 **Privacy Mode** | Instant hardware camera mute. |
-| `Ctrl + Alt + L` | 💡 **Ring Light** | Toggles the phone's back LED flashlight. |
-| `Ctrl + Alt + R` | ⏺️ **Local Record** | Starts / stops recording to `Videos\AndroidWebcam\`. |
+| `Ctrl + Alt + 1` | 🤳 **Câmera Frontal** | Alterna imediatamente para a lente de selfie. |
+| `Ctrl + Alt + 2` | 📸 **Câmera Traseira** | Ativa a lente principal de alta definição (50MP). |
+| `Ctrl + Alt + 3` | 🔭 **Ultra-Wide (0.6x)** | Lente grande-angular para capturar todo o ambiente. |
+| `Ctrl + Alt + Z` | 🔍 **Níveis de Zoom** | Alterna o zoom digital: `1.0x` ➔ `1.5x` ➔ `2.0x` ➔ `3.0x`. |
+| `Ctrl + Alt + O` | ↷ **Girar 90°** | Ajuste fino manual da rotação da imagem. |
+| `Ctrl + Alt + F` | 🪞 **Modo Espelho** | Inversão horizontal natural (efeito espelho). |
+| `Ctrl + Alt + D` | 📄 **Modo Mesa (180°)** | Inverte a imagem 180° para apontar o celular para a mesa e mostrar documentos. |
+| `Ctrl + Alt + M` | 🛑 **Modo Privacidade** | Corta o sinal de vídeo para tela preta instantânea. |
+| `Ctrl + Alt + A` | 🎙️ **Transmitir Áudio** | Liga ou desliga o microfone do smartphone na chamada. |
+| `Ctrl + Alt + L` | 💡 **Lanterna / Ring Light** | Liga o flash LED traseiro ou o Ring Light de tela frontal. |
+| `Ctrl + Alt + R` | ⏺️ **Gravação Local** | Inicia/para a gravação de um arquivo `.mp4` em disco. |
 
 ---
+
+# 🌐 English Documentation
 
 ## 🛠️ Architecture
 
 ```
-[ Android Smartphone ] ──(USB Cable / ADB)──> [ scrcpy v5.0.1 ]
-       │                                              │
-Hardware Camera2 API                             Direct3D 11
-  & MediaCodec                                        │
-                                                      ▼
-[ Meet / Zoom / Teams / Discord ] <── DirectShow <── [ OBS Virtual Camera ]
+[ Android Smartphone ] ──(USB 3.0 / ADB)──> [ scrcpy MediaCodec Stream ]
+       │                                                   │
+Camera2 Hardware API                                Named Pipe (MKV)
+& Dual Microphones                                         │
+                                                           ▼
+                                                  [ Decoupled FFmpeg ]
+                                                           │
+                      ┌────────────────────────────────────┴────────────────────────────────────┐
+                      ▼                                                                         ▼
+         [ 30 FPS Video Pipeline ]                                                 [ Studio Audio Pipeline ]
+                      │                                                                         │
+       Direct3D Letterboxed Scale (NV12)                                         48 kHz Opus Direct Route
+                      │                                                                         │
+                      ▼                                                                         ▼
+           [ OBS Virtual Camera ]                                                     [ VB-CABLE Input ]
+            (DirectShow Filter)                                                      (Virtual Audio Driver)
+                      │                                                                         │
+                      └─────────────────────────────┬───────────────────────────────────────────┘
+                                                    ▼
+                             [ Google Meet / Zoom / Teams / Discord ]
 ```
 
-1. **Android Side:** Communicates with `android.hardware.camera2` via ADB (`scrcpy-server`) with zero installed apps on the phone.
-2. **PC Side:** The tray app manages video feed initialization via Direct3D 11 hardware decoding.
-3. **Virtual Camera:** Injects frames directly into the registered DirectShow driver (`OBS Virtual Camera`).
+### 🧩 Why the Decoupled Architecture Matters
+* **No Google Meet Freeze:** DirectShow video input pins in Chromium pause or drop if frames stall for >1 second. Our dedicated consumer thread continuously feeds frames at a rock-solid 30.0 FPS clock, repeating the last clean frame during physical lens switches (~0.3s) so Google Meet never flags a buffer timeout.
+* **Acoustic Isolation:** Unlike standard scrcpy audio playback which outputs to default PC speakers, our pipeline isolates phone audio to an internal virtual audio sink (`CABLE Input`), producing zero sound on your notebook speakers while delivering crisp phone microphone capture to your meeting participants.
 
 ---
 
-## 🚀 Quick Start
+## 💻 Running from Source
 
-### Option A: Standalone Executable (Recommended)
-1. Download the latest release `.zip` from [Releases](https://github.com/octadigitalia/universal-android-webcam/releases).
-2. Extract the folder and run `AndroidWebcamPro.exe`.
-3. Enable **USB Debugging** on your Android phone (Settings > Developer Options > USB Debugging).
-4. Plug in your USB cable, click **"🟢 Iniciar Webcam"** in the tray, and select **"OBS Virtual Camera"** in your video app!
+If you want to modify or contribute to the project:
 
-### Option B: Running from Source
+### Prerequisites
+* Windows 10 or 11 (64-bit)
+* Python 3.11+
+* Git
+
 ```bash
+# Clone the repository
 git clone https://github.com/octadigitalia/universal-android-webcam.git
 cd universal-android-webcam
+
+# Install Python requirements
 pip install -r requirements.txt
+
+# Run the app
 python src/main.py
 ```
 
+### Building the Standalone Release Package
+To build the standalone `.exe` and `.zip` distribution locally:
+```bash
+python scripts/build_exe.py
+```
+This automatically compiles `AndroidWebcamPro.exe` via PyInstaller, bundles the drivers and dependencies, and produces a complete `.zip` in `release/`.
+
 ---
 
-<br>
+## 🤖 Automated CI/CD (GitHub Actions)
 
-# 🇧🇷 Recursos em Português
-
-Transforme **qualquer smartphone Android** em uma webcam profissional de altíssima definição e **zero delay** via cabo USB para Windows.
-
-### Principais Diferenciais:
-* **Detecção Automática:** Reconhece o modelo do aparelho e lista as câmeras físicas reais (Selfie, Traseira 50MP, Ultra-Wide 0.6x).
-* **Áudio USB de Estúdio:** Aproveita o microfone de ponta do smartphone com cancelamento de ruído nativo.
-* **Atalhos Globais:** Alterne câmeras, dê zoom ou mute o vídeo instantaneamente pelo teclado sem sair da chamada.
-* **Modo Mesa / Documentos (180°):** Aponte o celular para a mesa e mostre anotações ou cadernos com orientação perfeita.
-* **Gravação Local Full HD:** Salve uma cópia cristalina em `.mp4` direto no seu computador.
+Releases are automatically compiled and published through GitHub Actions workflows:
+* Regular commits to `master` keep the repository clean and light.
+* Pushing a semantic version tag (e.g. `v1.0.0`) automatically launches a Windows runner, downloads fresh binaries, compiles the application, and publishes the official GitHub Release with the zipped package ready for download.
 
 ---
 
 ## 📜 License
+
 This project is open-source under the [MIT License](LICENSE).
-Built with ❤️ by [OctaDigital](https://github.com/octadigitalia).
+
+Developed with ❤️ by **[OctaDigital](https://github.com/octadigitalia)**.
