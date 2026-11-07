@@ -79,7 +79,7 @@ class UniversalWebcamApp:
 
         # Orientation & Adaptation
         self.auto_rotate = True    # Detects physical device rotation
-        self.device_rotation = 0   # 0, 90, 180, 270 degrees
+        self.device_rotation = 90  # 90: Vertical (em pé), 0: Horizontal (deitado)
         self.manual_rotation = 0   # User offset (0, 90, 180, 270)
         self.is_mirrored = True
         self.is_desk_view = False
@@ -143,7 +143,7 @@ class UniversalWebcamApp:
                     if m:
                         v = int(m.group(1))
                         if v >= 0:
-                            rot_deg = (360 - (v * 90)) % 360 if v in [1, 3] else (v * 90) % 360
+                            rot_deg = (v * 270 + 90) % 360
                             return rot_deg
         except Exception:
             pass
@@ -160,7 +160,7 @@ class UniversalWebcamApp:
             m = re.search(r"mCurrentRotation=ROTATION_(\d+)", res.stdout)
             if m:
                 rot_code = int(m.group(1))
-                return (rot_code * 90) % 360
+                return (rot_code * 270 + 90) % 360
         except Exception:
             pass
 
@@ -205,6 +205,10 @@ class UniversalWebcamApp:
 
     def build_scrcpy_command(self, pipe_name):
         orient_flag = self.get_orientation_flag()
+        effective_rot = self.get_effective_rotation()
+        is_vertical = effective_rot in [90, 270]
+        win_w, win_h = (360, 640) if is_vertical else (640, 360)
+
         cmd = [
             self.device_mgr.scrcpy_exe,
             "--no-audio",              # Silences audio capture completely
@@ -215,8 +219,8 @@ class UniversalWebcamApp:
             f"--camera-fps={self.fps}",
             f"--capture-orientation={orient_flag}",
             "--window-title=AndroidCam",
-            "--window-width=640",
-            "--window-height=360",
+            f"--window-width={win_w}",
+            f"--window-height={win_h}",
             f"--record={pipe_name}",
             "--record-format=mkv"
         ]
@@ -283,6 +287,7 @@ class UniversalWebcamApp:
             "-flags", "low_delay",
             "-f", "matroska",
             "-i", "pipe:0",
+            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black",
             "-f", "rawvideo",
             "-pix_fmt", "nv12",
             "pipe:1"
@@ -666,10 +671,10 @@ class UniversalWebcamApp:
                 item("🔄 Auto-Adaptar (Detectar Giro do Celular)", lambda icon, it: self.toggle_auto_rotate(), checked=lambda it: self.auto_rotate),
                 item("↷ Girar 90° [Ctrl+Alt+O]", lambda icon, it: self.rotate_90()),
                 Menu.SEPARATOR,
-                item("0° (Normal - Em pé)", on_rot(0), checked=is_rot(0), radio=True),
-                item("90° (Deitado - Lateral Direita)", on_rot(90), checked=is_rot(90), radio=True),
-                item("180° (Invertido - Cabo por cima)", on_rot(180), checked=is_rot(180), radio=True),
-                item("270° (Deitado - Lateral Esquerda)", on_rot(270), checked=is_rot(270), radio=True)
+                item("90° (Vertical - Celular em pé)", on_rot(90), checked=is_rot(90), radio=True),
+                item("0° (Horizontal - Celular deitado)", on_rot(0), checked=is_rot(0), radio=True),
+                item("270° (Vertical Invertido)", on_rot(270), checked=is_rot(270), radio=True),
+                item("180° (Horizontal Invertido)", on_rot(180), checked=is_rot(180), radio=True)
             )),
             item("🪞 Modo Espelho (Flip Horizontal) [Ctrl+Alt+F]", lambda icon, it: self.toggle_mirror(), checked=lambda it: self.is_mirrored),
             item("📄 Modo Mesa / Documentos (180°) [Ctrl+Alt+D]", lambda icon, it: self.toggle_desk_view(), checked=lambda it: self.is_desk_view),
