@@ -1,0 +1,83 @@
+name: Build and Publish Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows Standalone Package
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Download & Prepare Scrcpy v5.0.1
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/Genymobile/scrcpy/releases/download/v5.0.1/scrcpy-win64-v5.0.1.zip" -OutFile "scrcpy.zip"
+          Expand-Archive -Path "scrcpy.zip" -DestinationPath "temp_scrcpy"
+          Move-Item -Path "temp_scrcpy/scrcpy-win64-v5.0.1" -Destination "scrcpy"
+          Remove-Item -Recurse -Force "temp_scrcpy", "scrcpy.zip"
+
+      - name: Download & Prepare FFmpeg 7.1
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip" -OutFile "ffmpeg.zip"
+          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "temp_ffmpeg"
+          $ffmpegExe = Get-ChildItem -Path "temp_ffmpeg" -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
+          Copy-Item -Path $ffmpegExe.FullName -Destination "ffmpeg.exe"
+          Remove-Item -Recurse -Force "temp_ffmpeg", "ffmpeg.zip"
+
+      - name: Build Executable with PyInstaller
+        shell: pwsh
+        run: |
+          pyinstaller --noconsole --onefile --name=AndroidWebcamPro `
+            --icon="assets/icon_on.ico" `
+            --add-data="assets;assets" `
+            --add-data="drivers;drivers" `
+            --paths="src" `
+            src/main.py
+
+      - name: Assemble Release Package
+        shell: pwsh
+        run: |
+          $ver = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v1.0.0" }
+          $pkgName = "AndroidWebcamPro-$ver-win64"
+          $releaseDir = "release/$pkgName"
+          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+          
+          Copy-Item -Path "dist/AndroidWebcamPro.exe" -Destination "$releaseDir/"
+          Copy-Item -Path "scrcpy" -Destination "$releaseDir/scrcpy" -Recurse
+          Copy-Item -Path "ffmpeg.exe" -Destination "$releaseDir/"
+          Copy-Item -Path "drivers" -Destination "$releaseDir/drivers" -Recurse
+          if (Test-Path "README.md") { Copy-Item -Path "README.md" -Destination "$releaseDir/" }
+          if (Test-Path "LICENSE") { Copy-Item -Path "LICENSE" -Destination "$releaseDir/" }
+          
+          Compress-Archive -Path $releaseDir -DestinationPath "release/$pkgName.zip"
+          Write-Host "Created release/$pkgName.zip"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: release/*.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false
