@@ -85,6 +85,8 @@ class UniversalWebcamApp:
         self.is_desk_view = False
         self.torch_on = False
         self.is_muted = False
+        self.audio_forwarding = True
+        self.vbcable_device = None
         self.is_recording = False
         self.current_record_file = None
 
@@ -203,16 +205,43 @@ class UniversalWebcamApp:
                 self.notify("Orientação Adaptada", f"Celular girado para {new_rot}° — adaptando imagem.")
                 self.live_switch_stream()
 
+    def check_vbcable_device(self):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            winmm = ctypes.windll.winmm
+            class WAVEOUTCAPS(ctypes.Structure):
+                _fields_ = [
+                    ('wMid', wintypes.WORD),
+                    ('wPid', wintypes.WORD),
+                    ('vDriverVersion', wintypes.DWORD),
+                    ('szPname', ctypes.c_char * 32),
+                    ('dwFormats', wintypes.DWORD),
+                    ('wChannels', wintypes.WORD),
+                    ('wReserved1', wintypes.WORD),
+                    ('dwSupport', wintypes.DWORD),
+                ]
+            for i in range(winmm.waveOutGetNumDevs()):
+                caps = WAVEOUTCAPS()
+                winmm.waveOutGetDevCapsA(i, ctypes.byref(caps), ctypes.sizeof(caps))
+                name = caps.szPname.decode('latin1', errors='ignore')
+                if 'cable' in name.lower() or 'vb-audio' in name.lower():
+                    return name
+        except Exception:
+            pass
+        return None
+
     def build_scrcpy_command(self, pipe_name):
         orient_flag = self.get_orientation_flag()
         effective_rot = self.get_effective_rotation()
         is_vertical = effective_rot in [90, 270]
         win_w, win_h = (360, 640) if is_vertical else (640, 360)
 
+        vbcable = self.check_vbcable_device()
+        self.vbcable_device = vbcable
+
         cmd = [
             self.device_mgr.scrcpy_exe,
-            "--no-audio",              # Silences audio capture completely
-            "--no-audio-playback",     # NEVER plays audio to laptop speakers (avoids microfonia)
             "--video-source=camera",
             f"--camera-id={str(self.camera_id)}",
             f"--camera-size={self.resolution}",
@@ -224,6 +253,16 @@ class UniversalWebcamApp:
             f"--record={pipe_name}",
             "--record-format=mkv"
         ]
+
+        if not self.audio_forwarding:
+            cmd.extend(["--no-audio", "--no-audio-playback"])
+        else:
+            if vbcable:
+                # With VB-CABLE, SDL outputs directly to virtual cable (speakers remain silent)
+                pass
+            else:
+                # Prevent microfonia on laptop speakers if VB-Cable is not yet registered
+                cmd.append("--no-audio-playback")
 
         if self.selected_device:
             cmd.extend(["-s", self.selected_device])
@@ -262,9 +301,14 @@ class UniversalWebcamApp:
 
         self.update_torch_state()
         cmd_scrcpy = self.build_scrcpy_command(pipe_name)
+        scrcpy_env = os.environ.copy()
+        if self.audio_forwarding and self.vbcable_device:
+            scrcpy_env["SDL_AUDIO_DEVICE_NAME"] = self.vbcable_device
+
         self.scrcpy_proc = subprocess.Popen(
             cmd_scrcpy,
             cwd=os.path.dirname(self.device_mgr.scrcpy_exe),
+            env=scrcpy_env,
             creationflags=CREATE_NO_WINDOW,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -555,6 +599,23 @@ class UniversalWebcamApp:
         self.notify("Modo Privacidade", status)
         self.update_menu_state()
 
+    def toggle_audio(self):
+        self.audio_forwarding = not self.audio_forwarding
+        status = "Ativada (Microfone Ativo)" if self.audio_forwarding else "Desativada"
+        self.notify("Transmissão de Áudio", f"Áudio do celular: {status}")
+        self.live_switch_stream()
+        self.update_menu_state()
+
+    def launch_vbcable_installer(self):
+        bat_path = os.path.join(BASE_DIR, "Instalar_Microfone_Virtual.bat")
+        try:
+            if not os.path.exists(bat_path):
+                bat_path = r"C:\GalaxyWebcam\Instalar_Microfone_Virtual.bat"
+            os.startfile(bat_path)
+            self.notify("Instalador de Áudio", "Abrindo instalador do Microfone Virtual (VB-CABLE)...")
+        except Exception as e:
+            self.notify("Erro ao abrir instalador", str(e))
+
     def toggle_recording(self):
         self.is_recording = not self.is_recording
         status = "Iniciada" if self.is_recording else "Encerrada"
@@ -603,6 +664,7 @@ class UniversalWebcamApp:
             '<ctrl>+<alt>+z': self.cycle_zoom,
             '<ctrl>+<alt>+o': self.rotate_90,
             '<ctrl>+<alt>+m': self.toggle_mute,
+            '<ctrl>+<alt>+a': self.toggle_audio,
             '<ctrl>+<alt>+f': self.toggle_mirror,
             '<ctrl>+<alt>+d': self.toggle_desk_view,
             '<ctrl>+<alt>+l': self.toggle_torch,
@@ -679,6 +741,11 @@ class UniversalWebcamApp:
             item("🪞 Modo Espelho (Flip Horizontal) [Ctrl+Alt+F]", lambda icon, it: self.toggle_mirror(), checked=lambda it: self.is_mirrored),
             item("📄 Modo Mesa / Documentos (180°) [Ctrl+Alt+D]", lambda icon, it: self.toggle_desk_view(), checked=lambda it: self.is_desk_view),
             item("🛑 Modo Privacidade (Mutar Vídeo) [Ctrl+Alt+M]", lambda icon, it: self.toggle_mute(), checked=lambda it: self.is_muted),
+            Menu.SEPARATOR,
+            item("🎙️ Transmissão de Áudio (Microfone)", Menu(
+                item("🎙️ Transmitir Microfone do Celular [Ctrl+Alt+A]", lambda icon, it: self.toggle_audio(), checked=lambda it: self.audio_forwarding),
+                item("🛠️ Instalar Microfone Virtual (VB-CABLE)", lambda icon, it: self.launch_vbcable_installer())
+            )),
             Menu.SEPARATOR,
             item("💡 Lanterna / Ring Light [Ctrl+Alt+L]", lambda icon, it: self.toggle_torch(), checked=lambda it: self.torch_on),
             item("⏺️ Gravação Local MP4 [Ctrl+Alt+R]", lambda icon, it: self.toggle_recording(), checked=lambda it: self.is_recording),
