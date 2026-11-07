@@ -11,10 +11,11 @@ build/
 dist/
 *.spec
 
-# Scrcpy binaries & logs (portable tools should be downloaded or packaged in release)
+# Binaries that should be downloaded or packaged in releases
 scrcpy-*/
 scrcpy/
 release/
+ffmpeg.exe
 *.log
 *.txt
 !requirements.txt

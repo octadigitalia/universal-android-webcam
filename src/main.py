@@ -25,6 +25,7 @@ import pystray
 from pystray import MenuItem as item, Menu
 import numpy as np
 import pyvirtualcam
+import dependencies
 
 try:
     from pynput import keyboard
@@ -89,6 +90,13 @@ class UniversalWebcamApp:
         self.vbcable_device = None
         self.is_recording = False
         self.current_record_file = None
+
+        # Auto-provision system drivers & dependencies on startup
+        try:
+            dependencies.ensure_dependencies(ask_audio=False)
+            self.vbcable_device = dependencies.check_virtual_microphone()
+        except Exception:
+            pass
 
         self.icon_off = Image.open(ICON_OFF_PATH) if os.path.exists(ICON_OFF_PATH) else None
         self.icon_on = Image.open(ICON_ON_PATH) if os.path.exists(ICON_ON_PATH) else None
@@ -206,30 +214,7 @@ class UniversalWebcamApp:
                 self.live_switch_stream()
 
     def check_vbcable_device(self):
-        try:
-            import ctypes
-            from ctypes import wintypes
-            winmm = ctypes.windll.winmm
-            class WAVEOUTCAPS(ctypes.Structure):
-                _fields_ = [
-                    ('wMid', wintypes.WORD),
-                    ('wPid', wintypes.WORD),
-                    ('vDriverVersion', wintypes.DWORD),
-                    ('szPname', ctypes.c_char * 32),
-                    ('dwFormats', wintypes.DWORD),
-                    ('wChannels', wintypes.WORD),
-                    ('wReserved1', wintypes.WORD),
-                    ('dwSupport', wintypes.DWORD),
-                ]
-            for i in range(winmm.waveOutGetNumDevs()):
-                caps = WAVEOUTCAPS()
-                winmm.waveOutGetDevCapsA(i, ctypes.byref(caps), ctypes.sizeof(caps))
-                name = caps.szPname.decode('latin1', errors='ignore')
-                if 'cable' in name.lower() or 'vb-audio' in name.lower():
-                    return name
-        except Exception:
-            pass
-        return None
+        return dependencies.check_virtual_microphone()
 
     def build_scrcpy_command(self, pipe_name):
         orient_flag = self.get_orientation_flag()
@@ -470,6 +455,16 @@ class UniversalWebcamApp:
         self.notify("Android Webcam Pro Ativa", f"{self.device_name} conectado a {self.resolution} via USB.")
         self.update_menu_state()
 
+        if self.audio_forwarding and not dependencies.check_virtual_microphone():
+            threading.Thread(target=self._prompt_audio_setup, daemon=True).start()
+
+    def _prompt_audio_setup(self):
+        if dependencies.install_virtual_microphone(ask_first=True):
+            self.vbcable_device = dependencies.check_virtual_microphone()
+            self.notify("Microfone Virtual", "Driver configurado! Áudio pronto para reuniões.")
+            self.live_switch_stream()
+            self.update_menu_state()
+
     def stop_camera(self):
         if not self.is_running:
             return
@@ -607,14 +602,14 @@ class UniversalWebcamApp:
         self.update_menu_state()
 
     def launch_vbcable_installer(self):
-        bat_path = os.path.join(BASE_DIR, "Instalar_Microfone_Virtual.bat")
-        try:
-            if not os.path.exists(bat_path):
-                bat_path = r"C:\GalaxyWebcam\Instalar_Microfone_Virtual.bat"
-            os.startfile(bat_path)
-            self.notify("Instalador de Áudio", "Abrindo instalador do Microfone Virtual (VB-CABLE)...")
-        except Exception as e:
-            self.notify("Erro ao abrir instalador", str(e))
+        installed = dependencies.install_virtual_microphone(ask_first=False)
+        if installed:
+            self.vbcable_device = dependencies.check_virtual_microphone()
+            self.notify("Microfone Virtual", "Driver instalado e ativado com sucesso!")
+            self.live_switch_stream()
+            self.update_menu_state()
+        else:
+            self.notify("Microfone Virtual", "Instalação cancelada ou pendente de permissão.")
 
     def toggle_recording(self):
         self.is_recording = not self.is_recording
@@ -744,7 +739,7 @@ class UniversalWebcamApp:
             Menu.SEPARATOR,
             item("🎙️ Transmissão de Áudio (Microfone)", Menu(
                 item("🎙️ Transmitir Microfone do Celular [Ctrl+Alt+A]", lambda icon, it: self.toggle_audio(), checked=lambda it: self.audio_forwarding),
-                item("🛠️ Instalar Microfone Virtual (VB-CABLE)", lambda icon, it: self.launch_vbcable_installer())
+                item("🛠️ Configurar Microfone Virtual (Auto)", lambda icon, it: self.launch_vbcable_installer())
             )),
             Menu.SEPARATOR,
             item("💡 Lanterna / Ring Light [Ctrl+Alt+L]", lambda icon, it: self.toggle_torch(), checked=lambda it: self.torch_on),
